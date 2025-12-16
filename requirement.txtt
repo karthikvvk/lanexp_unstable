@@ -1,0 +1,13 @@
+streamlit
+paramiko
+requests
+flask
+dotenv
+elevate
+scapy
+ipaddress
+ownca
+cryptography
+pyOpenSSL
+service-identity
+bcrypt

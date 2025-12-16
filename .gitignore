@@ -1,0 +1,10 @@
+*.pem
+*.txt
+*.json
+send_files/
+received_files/
+dump/
+*__pycache__/
+*.key
+.vscode/
+./pkica_export/
