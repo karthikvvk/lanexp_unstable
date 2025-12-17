@@ -23,12 +23,13 @@ import tempfile
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, Dict, Tuple
+import ipaddress
 
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from startsetup import load_env_vars, write_env
-from sender_api_functions import quic_connect, send_file, close_connection
+from sender_api_functions import quic_connect, send_file, close_connection, send_auth
 from receiver_api_functions import start_receiver, stop_receiver
 from pki.utils import fingerprint_pem, load_cert_pem, verify_cert_validity
 from pki.store import PeerStore
@@ -70,6 +71,36 @@ class SimulationEnv:
         
         print(f"\n[*] Simulation environment at: {self.work_dir}")
 
+        
+        print(f"\n[*] Simulation environment at: {self.work_dir}")
+
+
+async def ensure_ca_running(base_dir: Path):
+    """Check if we are CA and start signing server if so"""
+    ca_key = base_dir / "ca_key.pem"
+    ca_cert = base_dir / "ca_cert.pem"
+    
+    if ca_key.exists() and ca_cert.exists():
+        print("[*] CA keys found. Starting CA Service...")
+        from pki.ca_service import CAManager
+        # Host doesn't matter for serving, but CAManager needs it.
+        # We just need to start the server.
+        # Reuse CAManager logic? Or just start SigningServer directly?
+        # CAManager encapsulates discovery too. Better to use it.
+        mgr = CAManager("0.0.0.0", str(base_dir))
+        
+        # Load keys to start server
+        with open(ca_cert, "rb") as f: c = f.read()
+        with open(ca_key, "rb") as f: k = f.read()
+        
+        from pki.ca_service import CASigningServer, SIGNING_PORT
+        server = CASigningServer(c, k)
+        await asyncio.start_server(server.handle_client, '0.0.0.0', SIGNING_PORT)
+        
+        # Also start discovery responder
+        mgr.is_ca = True
+        await mgr.start_discovery()
+        print(f"[+] CA Service Running (Sign Port: {SIGNING_PORT})")
 
 # ==================== CERTIFICATE GENERATION ====================
 
@@ -153,7 +184,8 @@ def setup_certificates(env: SimulationEnv):
         ).add_extension(
             x509.SubjectAlternativeName([
                 x509.DNSName(u"localhost"),
-                x509.DNSName(u"127.0.0.1"),
+                x509.DNSName(peer_config.name),
+                x509.IPAddress(ipaddress.ip_address("127.0.0.1")),
             ]),
             critical=False,
         ).sign(ca_key, hashes.SHA256())
@@ -240,6 +272,9 @@ async def run_receiver(env: SimulationEnv, duration: int = 60):
     # Set environment variables
     os.environ["CA_CERT"] = str(env.work_dir / "ca_cert.pem")
     os.environ["PEERS_FILE"] = str(env.peer_a.peers_store_file)
+    os.environ["P2P_PASSWORD"] = "supersecret" # Explicitly set for test
+    
+    server = None
     
     def on_file_received(filepath: str, filesize: int):
         print(f"\n[✓] FILE RECEIVED: {filepath} ({filesize} bytes)")
@@ -265,7 +300,8 @@ async def run_receiver(env: SimulationEnv, duration: int = 60):
         import traceback
         traceback.print_exc()
     finally:
-        await stop_receiver()
+        if server:
+            await stop_receiver(server)
         print(f"\n[*] Receiver stopped")
 
 
@@ -300,6 +336,26 @@ async def run_sender(env: SimulationEnv, files: list[str]):
         )
         
         print(f"[✓] Connected!")
+        
+        # Authenticate
+        print(f"[*] Authenticating with password...")
+        # Note: In a real scenario, we don't know the password unless user provides it.
+        # But for test, we assume we know the target's P2P_PASSWORD.
+        # Peer A (receiver) will check P2P_PASSWORD env var. 
+        # But verification env needs to set it.
+        # Let's assume P2P_PASSWORD is set in env for both? 
+        # Or we pass it. But run_sender uses env vars primarily.
+        
+        # We need to send the password that Peer A expects.
+        # In this simulation, assuming shared secret "supersecret".
+        auth_success = await send_auth(conn, "supersecret")
+        if auth_success:
+             print(f"[✓] Authentication SUCCESS")
+        else:
+             print(f"[✗] Authentication FAILED")
+             # await close_connection(conn)
+             # return
+
         
         # Send files
         for filepath in files:

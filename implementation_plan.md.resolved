@@ -1,0 +1,82 @@
+# P2P CA-based Authentication Implementation Plan
+
+## Goal Description
+Implement a decentralized P2P CA-based authentication mechanism. Nodes should automatically discover a CA peer on the network. If no CA is found, the node should become the CA. Once a CA is established, peers obtain signed certificates. When connecting, peers authenticate using their certificate and a password (similar to SSH), establishing mutual trust.
+
+## User Review Required
+> [!IMPORTANT]
+> **Authentication Password**: ideally, we should not likely use the actual OS user password for P2P authentication due to security risks and permission issues (checking shadow file requires root). I will implement a `P2P_PASSWORD` environment variable (or auto-generated if missing) for this purpose.
+
+> [!WARNING]
+> **CA Discovery**: The discovery mechanism relies on UDP Broadcast. This works within a local subnet. If nodes are across different subnets, this discovery will fail. This is standard for "LAN explorer" type apps.
+
+## Proposed Changes
+
+### PKI Service Layer
+#### [NEW] [pki/ca_service.py](file:///home/muruga/workspace/quic_explorer/stable_v2/lanfxplorer/pki/ca_service.py)
+- **`CADiscovery` class**:
+    - Listens on UDP port 4434 for `WHO_IS_CA` broadcasts.
+    - Responds with `I_AM_CA <IP> <PORT>` if matches.
+    - Broadcasts `WHO_IS_CA` on startup.
+- **`CAServer` class**:
+    - Runs a TCP server (or HTTP) to accept CSRs (Certificate Signing Requests).
+    - Signs CSRs using the CA key and returns the Certificate.
+- **`CAManager` class**:
+    - Coordinates discovery.
+    - If no CA found after timeout, generates CA cert/key and starts `CAServer`.
+    - If CA found, sends CSR to `CAServer` and saves the received config.
+
+### PKI Utilities
+#### [MODIFY] [pki/utils.py](file:///home/muruga/workspace/quic_explorer/stable_v2/lanfxplorer/pki/utils.py)
+- Add `generate_csr(private_key, common_name)` function.
+- Add `sign_csr(csr, ca_cert, ca_key)` function.
+
+### Startup Logic
+#### [MODIFY] [startsetup.py](file:///home/muruga/workspace/quic_explorer/stable_v2/lanfxplorer/startsetup.py)
+- Integrate `CAManager`.
+- Before starting the main application, ensure:
+    - CA Cert is present (discovered or generated).
+    - Client Cert is signed by CA (or self-signed if we are CA).
+- Export `P2P_PASSWORD` if not set.
+
+### Authentication Handshake (Sender)
+#### [MODIFY] [sender_api_functions.py](file:///home/muruga/workspace/quic_explorer/stable_v2/lanfxplorer/sender_api_functions.py)
+- Add `send_auth(connection, password)` function.
+- Sends a stream with header filename `__AUTH__` and body [password](file:///home/muruga/workspace/quic_explorer/stable_v2/lanfxplorer/pki/store.py#175-182).
+
+### Authentication Handshake (Receiver)
+#### [MODIFY] [receiver_api_functions.py](file:///home/muruga/workspace/quic_explorer/stable_v2/lanfxplorer/receiver_api_functions.py)
+- Modify [_handle_stream](file:///home/muruga/workspace/quic_explorer/stable_v2/lanfxplorer/receiver_api_functions.py#56-201) to intercept filename `__AUTH__`.
+- Verify the received password against `os.environ["P2P_PASSWORD"]`.
+- If valid:
+    - Mark peer (Client Cert Fingerprint) as `trusted` in [PeerStore](file:///home/muruga/workspace/quic_explorer/stable_v2/lanfxplorer/pki/store.py#24-192).
+    - Send `AUTH_OK`.
+- If invalid:
+    - Send `AUTH_FAIL`.
+    - Disconnect/Reject.
+
+## Verification Plan
+
+### Automated Tests
+- **Test CA Service**: Create `tests/test_ca_service.py` to verify:
+    - Discovery broadcast/response.
+    - CSR signing flow.
+- **Test Auth Handshake**: Create `tests/test_auth_handshake.py` (or extend [test_receiver_handle_stream.py](file:///home/muruga/workspace/quic_explorer/stable_v2/lanfxplorer/tests/test_receiver_handle_stream.py)) to verify:
+    - `__AUTH__` stream handling.
+    - Password verification success/failure.
+    - Trusted status update.
+
+### Manual Verification
+1.  **Environment Setup**:
+    -   Clear user workspace or use temp dirs.
+    -   Set `P2P_PASSWORD=secret`.
+2.  **Peer A (CA)**:
+    -   Run `python3 startsetup.py` (modified) -> Should become CA.
+    -   Run `python3 peersim.py --mode peer-a` (modified to use startsetup logic).
+3.  **Peer B (Client)**:
+    -   Run `python3 startsetup.py` -> Should discover A and get signed.
+    -   Run `python3 peersim.py --mode peer-b --files test.txt`.
+4.  **Verification**:
+    -   Check logs to see "Connected to CA", "Certificate Signed".
+    -   Check logs for "Auth Success".
+    -   Verify file transfer completes.

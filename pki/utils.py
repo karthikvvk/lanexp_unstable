@@ -56,7 +56,10 @@ def verify_cert_validity(cert_pem: Union[str, bytes]) -> bool:
             cert_pem = cert_pem.encode()
         cert = x509.load_pem_x509_certificate(cert_pem)
         now = datetime.now(timezone.utc)
-        return cert.not_valid_before <= now <= cert.not_valid_after
+        # Handle both naive and aware datetimes from cryptography
+        nvb = cert.not_valid_before_utc if hasattr(cert, "not_valid_before_utc") else cert.not_valid_before.replace(tzinfo=timezone.utc)
+        nva = cert.not_valid_after_utc if hasattr(cert, "not_valid_after_utc") else cert.not_valid_after.replace(tzinfo=timezone.utc)
+        return nvb <= now <= nva
     except Exception:
         return False
 
@@ -130,7 +133,74 @@ def get_peer_cert_pem_from_writer(writer) -> str | None:
                     except Exception:
                         continue
 
+        if hasattr(quic, "tls"):
+            tls = quic.tls
+            # Try to find cert in tls object
+            if hasattr(tls, "peer_certificate") and tls.peer_certificate:
+                 return tls.peer_certificate.public_bytes(serialization.Encoding.PEM).decode("utf-8")
+            
+            # Look for _peer_certificate (private)
+            if hasattr(tls, "_peer_certificate") and tls._peer_certificate:
+                 return tls._peer_certificate.public_bytes(serialization.Encoding.PEM).decode("utf-8")
+
         # No candidate found
         return None
     except Exception:
         return None
+
+
+def generate_csr(private_key_pem: bytes, common_name: str) -> bytes:
+    """Generate a Certificate Signing Request (CSR).
+    
+    :param private_key_pem: Private key bytes (PEM)
+    :param common_name: Common Name (CN) for the subject
+    :return: CSR bytes (PEM)
+    """
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.x509.oid import NameOID
+    
+    key = serialization.load_pem_private_key(private_key_pem, password=None)
+    
+    csr = x509.CertificateSigningRequestBuilder().subject_name(x509.Name([
+        x509.NameAttribute(NameOID.COMMON_NAME, common_name),
+    ])).sign(key, hashes.SHA256())
+    
+    return csr.public_bytes(serialization.Encoding.PEM)
+
+
+def sign_csr(csr_pem: bytes, ca_cert_pem: bytes, ca_key_pem: bytes, days: int = 365) -> bytes:
+    """Sign a CSR using the CA certificate and key.
+    
+    :param csr_pem: CSR bytes (PEM)
+    :param ca_cert_pem: CA certificate bytes (PEM)
+    :param ca_key_pem: CA private key bytes (PEM)
+    :param days: Validity period in days
+    :return: Signed certificate bytes (PEM)
+    """
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from datetime import timedelta
+    
+    csr = x509.load_pem_x509_csr(csr_pem)
+    ca_cert = x509.load_pem_x509_certificate(ca_cert_pem)
+    ca_key = serialization.load_pem_private_key(ca_key_pem, password=None)
+    
+    # Build certificate
+    cert = x509.CertificateBuilder().subject_name(
+        csr.subject
+    ).issuer_name(
+        ca_cert.subject
+    ).public_key(
+        csr.public_key()
+    ).serial_number(
+        x509.random_serial_number()
+    ).not_valid_before(
+        datetime.now(timezone.utc)
+    ).not_valid_after(
+        datetime.now(timezone.utc) + timedelta(days=days)
+    ).add_extension(
+        x509.BasicConstraints(ca=False, path_length=None), critical=True,
+    ).sign(ca_key, hashes.SHA256())
+    
+    return cert.public_bytes(serialization.Encoding.PEM)

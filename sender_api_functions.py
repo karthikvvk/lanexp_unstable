@@ -268,3 +268,37 @@ async def close_connection(connection: QuicSenderConnection) -> None:
     Same as calling `await connection.close()`.
     """
     await connection.close()
+
+
+async def send_auth(
+    connection: QuicSenderConnection,
+    password: str,
+) -> bool:
+    """
+    Send authentication password to receiver.
+    
+    :param connection: QuicSenderConnection
+    :param password: Password string
+    :return: True if auth accepted, False otherwise
+    """
+    # Use internal _build_header helper but with special filename
+    filename = "__AUTH__"
+    data = password.encode("utf-8")
+    filesize = len(data)
+    
+    header = _build_header(filename, filesize)
+    
+    try:
+        reader, writer = await connection.protocol.create_stream()
+        
+        writer.write(header)
+        writer.write(data)
+        await writer.drain()
+        writer.write_eof()
+        
+        # Read response
+        response = await reader.read(1024)
+        return response == b"AUTH_OK"
+        
+    except Exception:
+        return False
