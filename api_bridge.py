@@ -21,35 +21,56 @@ ENV_FILE = ".env"
 CORS(app, resources={r"/*": {"origins":"*"}})
 
 
+# ----------------- Peer Discovery Responder ----------------- #
+import threading
 
+class PeerDiscoveryResponder(threading.Thread):
+    def __init__(self):
+        super().__init__()
+        self.daemon = True
+        self.running = True
+        self.discovery_port = 4434
+        self.discovery_msg = b"WHO_IS_PEER"
+        self.response_prefix = b"I_AM_PEER"
+        env = load_env_vars()
+        self.host_ip = env.get("host", "0.0.0.0")
 
-def check_subnet(ip):
-    env = load_env_vars()
-    host_ip = env["host"]
-    if not host_ip:
-        raise ValueError("HOST environment variable not set")
+    def run(self):
+        print(f"[*] Starting Peer Discovery Responder on UDP {self.discovery_port}...")
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            # On Linux, SO_REUSEPORT allows multiple processes to bind to the same port
+            try:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+            except AttributeError:
+                pass # Not available on all platforms
+                
+            try:
+                sock.bind(('0.0.0.0', self.discovery_port))
+            except Exception as e:
+                print(f"[!] Peer Discovery Bind Failed: {e}")
+                return
 
-    ip_parts = ip.strip().split('.')
-    default_parts = host_ip.strip().split('.')
-    ed = ip_parts[-1]
-    
-    if ed == '1' or ed == "200" or ed == "255":
-        return False
-    
-    return ip_parts[:-1] == default_parts[:-1]
+            while self.running:
+                try:
+                    data, addr = sock.recvfrom(1024)
+                    if data == self.discovery_msg:
+                        # Respond with I_AM_PEER <HOST_IP>
+                        response = f"{self.response_prefix.decode()} {self.host_ip}".encode()
+                        sock.sendto(response, addr)
+                except Exception as e:
+                    print(f"[!] Peer Discovery Error: {e}")
 
-
-def get_OS_TYPE(REMOTE_HOST=""):
+def start_peer_discovery():
     try:
-        response = requests.post(f"http://{REMOTE_HOST}:5000/osinfo", 
-                                json={"request": "osinfo"})
-        if response.status_code == 200:
-            data = response.json()
-            return {"os": data.get("os", "linux"), "user": data.get("user")}
-        else:
-            return {"os": "linux", "user": None}
-    except:
-        return {"os": "linux", "user": None}
+        t = PeerDiscoveryResponder()
+        t.start()
+    except Exception as e:
+        print(f"[-] Failed to start peer discovery: {e}")
+
+# ----------------- Peer Discovery Responder ----------------- #
+
+
 
 
 
@@ -80,18 +101,11 @@ def listhost():
     host = env["host"]
     
     host_list = gethostlist()
-    result = []
     
-    print(host_list)
-    for ip in host_list:
-        subck = check_subnet(ip)
-        print(subck)
-        if subck:
-            res = get_OS_TYPE(ip)
-            username = res.get("user")
-            result.append({"host": ip, "user": username, "os": res.get("os", "linux")})
+    # print(host_list)
+    
 
-    return jsonify(result)
+    return jsonify(host_list)
 
 
 @app.route("/osinfo", methods=["POST"])
@@ -435,4 +449,5 @@ def verify_peer_password():
 
 
 if __name__ == "__main__":
+    start_peer_discovery()
     app.run(host='0.0.0.0', port=5000, debug=True)

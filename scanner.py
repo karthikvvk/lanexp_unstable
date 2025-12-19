@@ -8,6 +8,11 @@ from ipaddress import IPv4Network, IPv4Address
 import concurrent.futures
 from typing import List
 from dotenv import load_dotenv
+import requests
+import socket
+import time
+
+# from api_bridge import check_subnet, get_OS_TYPE
 
 # Global variables
 host_ip = ""
@@ -21,6 +26,39 @@ user = ""
 pwd = ""
 dest_host = ""
 file_path = ""
+
+
+
+
+def check_subnet(ip, host_ip):
+    # env = load_env_vars()
+    # host_ip = env["host"]
+    if not host_ip:
+        raise ValueError("HOST environment variable not set")
+
+    ip_parts = ip.strip().split('.')
+    default_parts = host_ip.strip().split('.')
+    ed = ip_parts[-1]
+    
+    if ed == '1' or ed == "200" or ed == "255":
+        return False
+    
+    return ip_parts[:-1] == default_parts[:-1]
+
+
+def get_OS_TYPE(REMOTE_HOST=""):
+    try:
+        response = requests.post(f"http://{REMOTE_HOST}:5000/osinfo", 
+                                json={"request": "osinfo"})
+        if response.status_code == 200:
+            data = response.json()
+            return {"os": data.get("os", "linux"), "user": data.get("user")}
+        else:
+            return {"os": "linux", "user": None}
+    except:
+        return {"os": "linux", "user": None}
+
+
 
 
 def load_env():
@@ -65,14 +103,21 @@ def gethostlist():
     
     if system_name.startswith("lin"):
         # return scanfromlinux()
-        # lis = scanfromlinux().append("10.150.130.23")
-        lis = ["10.150.130.23"]
-        return lis
+        host_list = scanfromlinux()#.append("10.150.130.23")
+        # lis = ["10.150.130.23"]
     elif system_name.startswith("win") or system_name.startswith("nt"):
-        return scanfromwin()
-    else:
-        print(f"[!] Unsupported system: {system_name}")
-        return []
+        host_list = scanfromwin()
+    
+    result = []
+    for ip in host_list:
+        subck = check_subnet(ip, host_ip)
+        if subck:
+            res = get_OS_TYPE(ip)
+            username = res.get("user")
+            if username:
+                result.append({"host": ip, "user": username, "os": res.get("os", "linux")})
+    return result
+    
 
 
 
@@ -83,6 +128,104 @@ def gethostlist():
 
 
 
+
+
+def scan_udp(network=None):
+    """
+    Scans for UDP discovery agents (CA/Peers) by broadcasting WHO_IS_CA.
+    """
+    network  = f"{gateway}/{cidr}"
+    global broadcast
+    DISCOVERY_PORT = 4434
+    DISCOVERY_MSG = b"WHO_IS_CA"
+    CA_RESPONSE_PREFIX = b"I_AM_CA"
+    
+    found = set()
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        sock.settimeout(2.0)
+        
+        # Send broadcast to generic 255.255.255.255
+        try:
+            sock.sendto(DISCOVERY_MSG, ('<broadcast>', DISCOVERY_PORT))
+        except Exception as e:
+            # print(f"[!] Generic broadcast failed: {e}")
+            pass
+            
+        # Also try directed broadcast if available
+        if broadcast:
+             try:
+                 sock.sendto(DISCOVERY_MSG, (broadcast, DISCOVERY_PORT))
+             except Exception:
+                 pass
+        
+        start_time = time.time()
+        while time.time() - start_time < 2.0:
+            try:
+                data, addr = sock.recvfrom(4096)
+                if data.startswith(CA_RESPONSE_PREFIX):
+                    found.add(addr[0])
+            except socket.timeout:
+                break
+            except Exception:
+                pass
+        sock.close()
+    except Exception as e:
+        print(f"[!] UDP Scan failed: {e}", file=os.sys.stderr)
+        
+    return list(found)
+
+
+def scan_peers_udp(network=None):
+    """
+    Scans for ANY active peers by broadcasting WHO_IS_PEER.
+    This is separate from CA discovery.
+    """
+    global broadcast
+    DISCOVERY_PORT = 4434
+    PEER_DISCOVERY_MSG = b"WHO_IS_PEER"
+    PEER_RESPONSE_PREFIX = b"I_AM_PEER"
+    
+    found = set()
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        sock.settimeout(2.0)
+        
+        # Send broadcast to generic 255.255.255.255
+        try:
+            sock.sendto(PEER_DISCOVERY_MSG, ('<broadcast>', DISCOVERY_PORT))
+        except Exception as e:
+            pass
+            
+        # Also try directed broadcast if available
+        if broadcast:
+             try:
+                 sock.sendto(PEER_DISCOVERY_MSG, (broadcast, DISCOVERY_PORT))
+             except Exception:
+                 pass
+        
+        start_time = time.time()
+        while time.time() - start_time < 2.0:
+            try:
+                data, addr = sock.recvfrom(4096)
+                if data.startswith(PEER_RESPONSE_PREFIX):
+                    # Format: I_AM_PEER <host_ip>
+                    parts = data.decode().split()
+                    if len(parts) >= 2:
+                        found.add(parts[1])
+                    else:
+                        found.add(addr[0])
+            except socket.timeout:
+                break
+            except Exception:
+                pass
+        sock.close()
+    except Exception as e:
+        print(f"[!] Peer UDP Scan failed: {e}", file=os.sys.stderr)
+        
+    return list(found)
 
 # ----------------- Linux scanning integration ----------------- #
 def scanfromlinux():
@@ -99,6 +242,7 @@ def scanfromlinux():
         return []
     try:
         network = f"{gateway}/{cidr}"
+        # print(network)
         # Validate network by constructing IPv4Network
         IPv4Network(network, strict=False)
     except Exception as e:
@@ -107,23 +251,28 @@ def scanfromlinux():
 
     # Methods to try in order
     methods = [
-        ("nmap_unprivileged", _scan_nmap_unprivileged),
-        ("arp_neigh", _scan_arp_table),
         ("ping_sweep", _scan_ping_sweep),
+        ("arp_neigh", _scan_arp_table),
+        ("nmap_unprivileged", _scan_nmap_unprivileged),
+        ("udp_broadcast", scan_udp),
     ]
-
+    hostset = set()
     for name, func in methods:
+        # print(f"[*] Trying method: {name}...")
         try:
             found = func(network)
             if found:
                 # update file and return the list
-                append_host(found)
-                return found
+                hostset.update(found)
+            
+                # return found
         except Exception as e:
             # keep trying other methods on any failure
             print(f"[!] {name} failed: {e}", file=os.sys.stderr)
             continue
-
+    if hostset:
+        append_host(hostset)
+        return hostset
     # nothing found
     return []
 
@@ -181,7 +330,7 @@ def _scan_nmap_unprivileged(network: str, ports: str = "22,80,443,445", timeout:
 
         # Run with a timeout to avoid hanging
         result = subprocess.check_output(args, text=True, stderr=subprocess.STDOUT, timeout=timeout)
-
+        # print("[*] nmap scan completed", result)
         found = re.findall(r'Nmap scan report for (\d{1,3}(?:\.\d{1,3}){3})', result)
         unique = sorted(set(found))
         return unique
@@ -225,6 +374,7 @@ def _scan_arp_table(network: str) -> List[str]:
         return []
 
     ips = set(re.findall(r'(\d{1,3}(?:\.\d{1,3}){3})', out))
+    # print(f"[*] Found {len(ips)} entries in neighbor table")
     filtered = [ip for ip in sorted(ips) if IPv4Address(ip) in net]
     return filtered
 
@@ -246,6 +396,7 @@ def _scan_ping_sweep(network: str) -> List[str]:
         try:
             res = subprocess.run(["ping", "-c", "1", "-W", "1", ip],
                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
+            # print(f"[*] Pinging {ip}: {'Alive' if res.returncode == 0 else 'No response'}")
             return ip if res.returncode == 0 else None
         except Exception:
             return None
@@ -255,7 +406,8 @@ def _scan_ping_sweep(network: str) -> List[str]:
         for r in ex.map(ping_check, ip_list):
             if r:
                 alive.append(r)
-    return sorted(alive)
+        # print(f"[*] Ping sweep found {alive} alive hosts")
+    return alive
 
 
 
@@ -364,7 +516,7 @@ def append_host(lis):
         existing_ips = set(line.strip() for line in data if line.strip())
         
         # Combine with new IPs
-        total_ips = existing_ips.union(set(lis))
+        total_ips = existing_ips.union(lis)
         
         # Write back sorted list
         with open(file_path, "w") as fh:
@@ -378,3 +530,4 @@ def append_host(lis):
 
 
 # print(gethostlist())
+print(scan_peers_udp())
