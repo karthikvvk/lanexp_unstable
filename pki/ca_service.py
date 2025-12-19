@@ -14,8 +14,8 @@ from pki import utils
 # Constants
 DISCOVERY_PORT = 4434
 SIGNING_PORT = 4435
-DISCOVERY_MSG = b"WHO_IS_CA"
-CA_RESPONSE_PREFIX = b"I_AM_CA"
+PEER_DISCOVERY_MSG = b"WHO_IS_PEER"
+PEER_RESPONSE_PREFIX = b"I_AM_PEER"
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +38,10 @@ class CADiscoveryProtocol(asyncio.DatagramProtocol):
         if self.is_ca and data == DISCOVERY_MSG:
             # I am CA, respond
             response = f"{CA_RESPONSE_PREFIX.decode()} {self.ca_manager.host} {SIGNING_PORT}".encode()
+            self.transport.sendto(response, addr)
+        elif data == PEER_DISCOVERY_MSG:
+            # General Peer Discovery Response
+            response = f"{PEER_RESPONSE_PREFIX.decode()} {self.ca_manager.host}".encode()
             self.transport.sendto(response, addr)
         elif not self.is_ca and data.startswith(CA_RESPONSE_PREFIX):
             # Found a CA!
@@ -170,6 +174,42 @@ class CAManager:
         
         return ca_cert_pem, ca_key_pem
 
+    def check_ca_status(self) -> bool:
+        """Check if CA keys exist on disk and update is_ca state."""
+        ca_cert_path = os.path.join(self.cert_dir, "ca_cert.pem")
+        ca_key_path = os.path.join(self.cert_dir, "ca_key.pem")
+        if os.path.exists(ca_cert_path) and os.path.exists(ca_key_path):
+            self.is_ca = True
+            return True
+        return False
+
+    async def start_ca_service(self):
+        """Start the CA Signing Server and Discovery Responder if this node is the CA."""
+        if not self.is_ca:
+            if not self.check_ca_status():
+                logger.warning("Cannot start CA service: CA keys not found.")
+                return 
+
+        try:
+            ca_cert_path = os.path.join(self.cert_dir, "ca_cert.pem")
+            ca_key_path = os.path.join(self.cert_dir, "ca_key.pem")
+            
+            with open(ca_cert_path, "rb") as f: ca_cert_pem = f.read()
+            with open(ca_key_path, "rb") as f: ca_key_pem = f.read()
+            
+            # Start TCP Signing Server
+            server = CASigningServer(ca_cert_pem, ca_key_pem)
+            # We don't store the server object, letting it run in background loop.
+            # Ideally we should keep track of it to close it, but for this service it's fine.
+            self.signing_server = await asyncio.start_server(server.handle_client, '0.0.0.0', SIGNING_PORT)
+            logger.info(f"CA Signing Server started on {SIGNING_PORT}")
+            
+            # Start UDP Discovery (as responder since self.is_ca is True)
+            await self.start_discovery()
+            
+        except Exception as e:
+            logger.error(f"Failed to start CA service: {e}")
+
     async def get_signed_cert(self, private_key_pem: bytes, common_name: str) -> Tuple[bytes, bytes]:
         """Returns (client_cert_pem, ca_cert_pem)"""
         csr_pem = utils.generate_csr(private_key_pem, common_name)
@@ -198,5 +238,6 @@ class CAManager:
         finally:
             writer.close()
             await writer.wait_closed()
+
 
 
