@@ -39,10 +39,6 @@ class CADiscoveryProtocol(asyncio.DatagramProtocol):
             # I am CA, respond
             response = f"{CA_RESPONSE_PREFIX.decode()} {self.ca_manager.host} {SIGNING_PORT}".encode()
             self.transport.sendto(response, addr)
-        elif data == PEER_DISCOVERY_MSG:
-            # General Peer Discovery Response
-            response = f"{PEER_RESPONSE_PREFIX.decode()} {self.ca_manager.host}".encode()
-            self.transport.sendto(response, addr)
         elif not self.is_ca and data.startswith(CA_RESPONSE_PREFIX):
             # Found a CA!
             parts = data.decode().split()

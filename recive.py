@@ -44,6 +44,22 @@ async def main() -> None:
     print(f"          KEY={key_path}")
     print(f"          OUTDIR={out_dir}")
 
+    # Initialize CA Manager to handle CA duties if we are the CA
+    from pki.ca_service import CAManager
+    
+    # We use current directory as cert directory, same as startsetup.py
+    # CAManager needs the actual IP to advertise itself, not 0.0.0.0
+    ca_ip = env.get("host") or recivhost
+    ca_mgr = CAManager(ca_ip, os.getcwd())
+    
+    # Check if we are CA and start service if so
+    if ca_mgr.check_ca_status():
+        print(f"[receiver] CA keys found in {os.getcwd()}. Starting CA Service (Signing + Discovery)...")
+        print(f"[receiver] CA will be advertised at {ca_ip}")
+        await ca_mgr.start_ca_service()
+    else:
+        print("[receiver] No CA keys found locally. Running as standard peer.")
+
     # Start the QUIC receiver using the API
     server = await start_receiver(
         host=recivhost,
