@@ -29,7 +29,7 @@ class PeerDiscoveryResponder(threading.Thread):
         super().__init__()
         self.daemon = True
         self.running = True
-        self.discovery_port = 4434
+        self.discovery_port = 4436
         self.discovery_msg = b"WHO_IS_PEER"
         self.response_prefix = b"I_AM_PEER"
         env = load_env_vars()

@@ -14,8 +14,8 @@ from pki import utils
 # Constants
 DISCOVERY_PORT = 4434
 SIGNING_PORT = 4435
-PEER_DISCOVERY_MSG = b"WHO_IS_PEER"
-PEER_RESPONSE_PREFIX = b"I_AM_PEER"
+DISCOVERY_MSG = b"WHO_IS_CA"
+CA_RESPONSE_PREFIX = b"I_AM_CA"
 
 logger = logging.getLogger(__name__)
 

@@ -183,7 +183,7 @@ def scan_peers_udp(network=None):
     This is separate from CA discovery.
     """
     global broadcast
-    DISCOVERY_PORT = 4434
+    DISCOVERY_PORT = 4436
     PEER_DISCOVERY_MSG = b"WHO_IS_PEER"
     PEER_RESPONSE_PREFIX = b"I_AM_PEER"
     
