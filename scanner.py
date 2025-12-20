@@ -99,15 +99,15 @@ def gethostlist():
     
     load_env()
     
-    file_path = os.path.join(pwd, "ipsn.txt")
+    # file_path = os.path.join(pwd, "ipsn.txt")
     
-    if system_name.startswith("lin"):
-        # return scanfromlinux()
-        host_list = scanfromlinux()#.append("10.150.130.23")
-        # lis = ["10.150.130.23"]
-    elif system_name.startswith("win") or system_name.startswith("nt"):
-        host_list = scanfromwin()
-    
+    # if system_name.startswith("lin"):
+    #     # return scanfromlinux()
+    #     host_list = scanfromlinux()#.append("10.150.130.23")
+    #     # lis = ["10.150.130.23"]
+    # elif system_name.startswith("win") or system_name.startswith("nt"):
+    #     host_list = scanfromwin()
+    host_list = scan_peers_udp()
     result = []
     for ip in host_list:
         subck = check_subnet(ip, host_ip)
@@ -128,53 +128,6 @@ def gethostlist():
 
 
 
-
-
-def scan_udp(network=None):
-    """
-    Scans for UDP discovery agents (CA/Peers) by broadcasting WHO_IS_CA.
-    """
-    network  = f"{gateway}/{cidr}"
-    global broadcast
-    DISCOVERY_PORT = 4434
-    DISCOVERY_MSG = b"WHO_IS_CA"
-    CA_RESPONSE_PREFIX = b"I_AM_CA"
-    
-    found = set()
-    try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        sock.settimeout(2.0)
-        
-        # Send broadcast to generic 255.255.255.255
-        try:
-            sock.sendto(DISCOVERY_MSG, ('<broadcast>', DISCOVERY_PORT))
-        except Exception as e:
-            # print(f"[!] Generic broadcast failed: {e}")
-            pass
-            
-        # Also try directed broadcast if available
-        if broadcast:
-             try:
-                 sock.sendto(DISCOVERY_MSG, (broadcast, DISCOVERY_PORT))
-             except Exception:
-                 pass
-        
-        start_time = time.time()
-        while time.time() - start_time < 2.0:
-            try:
-                data, addr = sock.recvfrom(4096)
-                if data.startswith(CA_RESPONSE_PREFIX):
-                    found.add(addr[0])
-            except socket.timeout:
-                break
-            except Exception:
-                pass
-        sock.close()
-    except Exception as e:
-        print(f"[!] UDP Scan failed: {e}", file=os.sys.stderr)
-        
-    return list(found)
 
 
 def scan_peers_udp(network=None):
@@ -254,7 +207,7 @@ def scanfromlinux():
         ("ping_sweep", _scan_ping_sweep),
         ("arp_neigh", _scan_arp_table),
         ("nmap_unprivileged", _scan_nmap_unprivileged),
-        ("udp_broadcast", scan_udp),
+        # ("udp_broadcast", scan_udp),
     ]
     hostset = set()
     for name, func in methods:
@@ -530,4 +483,4 @@ def append_host(lis):
 
 
 # print(gethostlist())
-print(scan_peers_udp())
+# print(scan_peers_udp())
